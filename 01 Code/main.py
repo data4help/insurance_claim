@@ -10,8 +10,12 @@ import math
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from sklearn.neighbors import KNeighborsRegressor
+from sklearn.pipeline import Pipeline
+from sklearn.impute import KNNImputer
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.decomposition import PCA
+
+from imblearn.over_sampling import SMOTE
 
 # Paths
 MAIN_PATH = r"/Users/paulmora/Documents/projects/insurance_claim"
@@ -24,6 +28,10 @@ OUTPUT_PATH = rf"{MAIN_PATH}/03 Output"
 train_data = pd.read_csv(rf"{RAW_PATH}/train.csv")
 test_data = pd.read_csv(rf"{RAW_PATH}/test.csv")
 total_data = pd.concat([train_data, test_data], axis=0)
+total_data.reset_index(drop=True, inplace=True)
+
+### SMALL DATASET
+total_data = total_data.loc[:1_000, :]
 
 # %% Settings
 
@@ -75,83 +83,95 @@ Given the very small correlation we see between the highly missing columns and t
 them since it is not worth trying to rescue them.
 """
 
-new_sorted_missing_pct = sorted_missing_pct.drop(highly_missing_columns)
-no_nan_columns = list(sorted_missing_pct[sorted_missing_pct == 0].index)
-still_missing_columns = list(set(sorted_missing_pct.index) - set(no_nan_columns))
-
-"""
-Given that we found several variables which show that they are floats even though they are binary variables, this
-is checked and changed where needed.
-"""
-
-features = list(set(total_data.columns) - set(["id", "target"]))
-
-feature = "ps_ind_04_cat"
-
-for feature in tqdm(features):
-    bool_nan_series = total_data.loc[:, feature].isna()
-    non_nan_series = total_data.loc[~bool_nan_series, feature]
-    bool_already_binary_column = feature.endswith("_bin")
-    bool_binary_content = set(non_nan_series) - set([0, 1]) == set()
-    if bool_binary_content and not bool_already_binary_column:
-        total_data.loc[~bool_nan_series, feature] = total_data.loc[~bool_nan_series, feature].astype(int)
-        total_data.rename(columns={feature: f"{feature}_bin"}, inplace=True)
-# NOT WORKING
-
-"""
-Furthermore we find a couple of variables which are indicated as floats but they are more like categorical variables,
-given
-"""
-
-    bool_float_cat = total_data.loc[:, feature].value_counts().min() > 1
-    bool_float_indication = feature[-1].isnumeric()
-    if bool_float_cat and bool_float_indication:
-        total_data.rename(columns={feature: f"{feature}_float_cat"}, inplace=True)
-
-total_data.loc[:, "ps_car_07_cat"].value_counts()
-
-feature = features[0]
-
-cat_vars
-float_vars =
-
-float_columns = [x for (x, y) in zip(total_data.columns, total_data.dtypes) if y == float and x[-1].isnumeric()]
-cat_variables = [x for (x, y) in zip(total_data.columns, total_data.dtypes) if x.endswith("_cat") or y == int]
-
-total_data.loc[:, "ps_ind_07_bin"]
-
-"""
-For the moment we simply will fill in the mean before doing something more sophisticated
-
-Ideas:
-    - KNN for categorical
-    - KNN Regression for continuous variables
-
-"""
-
 total_data.drop(columns=highly_missing_columns, inplace=True)
-filled_total_data = total_data.fillna(total_data.mean())
+new_sorted_missing_pct = sorted_missing_pct.drop(highly_missing_columns)
 
-assert filled_total_data.isna().any().any() == False, "Still Missing Data"
+"""
+Now we will impute the missing columns with the KNN approach
+"""
+
+features = list(set(total_data) - set(["id", "target"]))
+df_features = total_data.loc[:, features]
+
+minmax_scaler = MinMaxScaler()
+imputer = KNNImputer(n_neighbors=1, weights="uniform", metric="nan_euclidean")
+pipe = Pipeline([("scaler", minmax_scaler), ("imputation", imputer)])
+pipe.fit(df_features)
+
+scaled_total_data = total_data.copy()
+scaled_total_data.loc[:, features] = pipe.transform(df_features)
+
+assert scaled_total_data.isna().any().any() == False, "Still Missing Data"
 
 # %% Target Variable - Imbalanced Data
 
 """
-As in every classification project within insurance we face quite a strong imbalance. In the first go we will not
-address this problem but will come back to this and try:
-    - SMOTE Up-sampling
-    - SMOTE Up-sampling plus random down-sampling
+Before moving on to the feature creation we take a gander on the balancing of the class
 """
 
-fig, axs = plt.subplots(figsize=(10, 10))
-sns.countplot(x="target", data=total_data, ax=axs)
-axs.tick_params(axis="both", which="major")
-axs.set_ylabel("Count")
-path = rf"{OUTPUT_PATH}/count_plot.png"
-fig.savefig(path, bbox_inches='tight')
-plt.close()
+
+def count_plot_creation(data, name):
+    """
+    This function plots the count of the target variable
+    :param data: dataframe: which contains a column called target
+    :param name: str: String to specify how the plot should be saved
+    """
+    fig, axs = plt.subplots(figsize=(10, 10))
+    sns.countplot(x="target", data=data, ax=axs)
+    axs.tick_params(axis="both", which="major")
+    axs.set_ylabel("Count")
+    path = rf"{OUTPUT_PATH}/count_plot_{name}.png"
+    fig.savefig(path, bbox_inches='tight')
+    plt.close()
+
+
+def pca_scatterplot_creation(data, features, name):
+
+    pca = PCA(n_components=2)
+    pca_factors = pd.DataFrame(pca.fit_transform(data.loc[:, features]),
+                               columns=["PCA_0", "PCA_1"])
+    pca_factors.loc[:, "target"] = data.loc[:, "target"]
+    fig, axs = plt.subplots(figsize=(10, 10))
+    sns.scatterplot(data=pca_factors, x="PCA_0", y="PCA_1", hue="target")
+    path = rf"{OUTPUT_PATH}/scatter_plot_{name}.png"
+    fig.savefig(path, bbox_inches='tight')
+    plt.close()
+
+
+count_plot_creation(scaled_total_data, "no_sampling")
+pca_scatterplot_creation(scaled_total_data, features, "no_sampling")
+
+
+"""
+As in every classification project within insurance we face quite a strong imbalance. To mitigate that problem
+we fire up a SMOTE over-sampler. We try 
+"""
+
+oversample = SMOTE(sampling_strategy=0.5)
+x_data = scaled_total_data.loc[:, features]
+y_data = scaled_total_data.loc[:, "target"]
+sampled_x_data, sampled_y_data = oversample.fit_resample(x_data, y_data)
+upsampled_total_data = pd.concat([sampled_x_data, sampled_y_data], axis=1)
+
+pca_scatterplot_creation(upsampled_total_data, features, "upsampling")
 
 # %% Feature Engineering
+
+# Re-assigning the features into different categories
+
+"""
+Within the data we have several variables which are indicated to be floats, even though they should be
+classified as categorical given that all observations fall into a category which is only labelled as a
+numeric value
+"""
+
+for feature in features:
+    bool_float_cat = upsampled_total_data.loc[:, feature].value_counts().min() > 1
+    bool_float_indication = feature[-1].isnumeric()
+    if bool_float_cat and bool_float_indication:
+        upsampled_total_data.rename(columns={feature: f"{feature}_float_cat"}, inplace=True)
+
+# Float variables
 
 """
 Before diving into the variables we first have to change the type of some numeric columns. That is because
@@ -159,16 +179,19 @@ we have some variables which are denoted as float, but are actually categorical.
 at the following plot of float columns
 """
 
+float_columns = [x for x in upsampled_total_data.columns if x[-1].isnumeric()]
 float_plot_cols = 2
 float_plot_rows = math.ceil(len(float_columns) / float_plot_cols)
 fig, axs = plt.subplots(nrows=float_plot_rows, ncols=float_plot_cols,
                         figsize=(float_plot_cols * 10, float_plot_rows * 10))
 axs = axs.ravel()
 for i, float_column in tqdm(enumerate(float_columns)):
-    sns.histplot(total_data.loc[:, float_column], ax=axs[i])
+    sns.histplot(upsampled_total_data.loc[:, float_column], ax=axs[i])
 path = rf"{OUTPUT_PATH}/continuous_variables_dist.png"
 fig.savefig(path, bbox_inches='tight')
 plt.close()
+
+# Categorical variables
 
 """
 We therefore define every column of these float variables as a categorical if every category has more than one
@@ -209,54 +232,13 @@ total_data.loc[:, "ps_car_11"].value_counts()
 a = total_data.loc[:, "ps_car_13"].value_counts()
 
 
+# %% Model building
+
+
+
+
+
 # %%
-
-
-def mean_imputing(data, target):
-
-    mean_of_target_variable = np.nanmean(data.loc[:, target])
-    filled_column = data.loc[:, target].fillna(mean_of_target_variable)
-    return filled_column
-
-
-def median_imputing(data, target):
-
-    median_of_target_variable = np.nanmedian(data.loc[:, target])
-    filled_column = data.loc[:, target].fillna(median_of_target_variable)
-    return filled_column
-
-
-def nearest_neighbor(data, target, features)
-
-    bool_nan_target_rows = data.loc[:, target].isna()
-
-    x_raw = data.loc[~bool_nan_target_rows, features]
-    x_norm = MinMaxScaler().fit_transform(x_raw)
-    y = data.loc[~bool_nan_target_rows, target]
-
-    neigh = KNeighborsRegressor(n_neighbors=1)
-    neigh.fit(x_norm, y)
-
-    neigh.predict(x_norm[bool_nan_target_rows])
-    neigh.predict(data.loc[~bool_nan_target_rows, features])
-
-
-
-def imputing_assessment(imputed_series):
-
-
-    time_series = imputed_series.dropna().reset_index(drop=True)
-
-    n = 50
-    random.seed(42)
-    rand_num = random.sample(range(0, len(time_series)), n)
-
-    time_series_w_nan = time_series.copy()
-    time_series_w_nan[rand_num] = np.nan
-
-
-
-
 
 
 
