@@ -11,9 +11,10 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 from sklearn.pipeline import Pipeline
-from sklearn.impute import KNNImputer
+from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.decomposition import PCA
+from sklearn.base import BaseEstimator, TransformerMixin
 
 from imblearn.over_sampling import SMOTE
 
@@ -77,18 +78,73 @@ use them in predictive models for the target variable.
 THRESHOLD_MISSING = 40
 highly_missing_columns = list(sorted_missing_pct[sorted_missing_pct > THRESHOLD_MISSING].index)
 highly_missing_corr_df = train_data.loc[:, highly_missing_columns + ["target"]].corr()
-
-"""
-Given the very small correlation we see between the highly missing columns and the target we decide to simply drop
-them since it is not worth trying to rescue them.
-"""
-
 total_data.drop(columns=highly_missing_columns, inplace=True)
-new_sorted_missing_pct = sorted_missing_pct.drop(highly_missing_columns)
 
-"""
-Now we will impute the missing columns with the KNN approach
-"""
+# %% Allocate variable to correct category
+
+
+def categorical_check(column, data):
+    series = data.loc[:, column].dropna()
+    bool_series_cat = series.value_counts().min() > 1
+    bool_binary = list(set(series) - set([0, 1])) == []
+    return bool_series_cat and not bool_binary
+
+
+def binary_check(column, data):
+    series = data.loc[:, column].dropna()
+    bool_binary = list(set(series) - set([0, 1])) == []
+    return bool_binary
+
+
+def float_check(column, data):
+    series = data.loc[:, column].dropna()
+    bool_float = series.value_counts().min() == 1
+    return bool_float
+
+
+y = total_data.loc[:, "target"]
+feature_data = total_data.drop(columns=["target", "id"])
+cat_variables = [x for x in feature_data.columns if categorical_check(x, feature_data)]
+bin_variables = [x for x in feature_data.columns if binary_check(x, feature_data)]
+float_variables = [x for x in feature_data.columns if float_check(x, feature_data)]
+
+assert bool(set(cat_variables) & set(bin_variables) & set(float_variables)) is False, "Multiple Columns in diff Cat"
+
+# %% Imputation Classes
+
+# Categorical
+class CategoricalImputation:
+
+    def __int__(self, columns):
+        self.columns = columns
+
+    def columns_divider(self, X):
+        """This method divides the columns with nans and those which do not have any"""
+        bool_missing = X.isna().any()
+        columns_w_nans = X.columns[bool_missing]
+        columns_wo_nans = X.columns[~bool_missing]
+        return columns_w_nans, columns_wo_nans
+
+    def
+
+    def fit(self, X, y=None):
+        features, target = self.columns_divider(X)
+        neigh = NearestNeighbors(n_neighbors=1)
+        neigh.fit(features, target)
+
+
+
+a = CategoricalImputation()
+
+a.fit(feature_data)
+
+feature_data.columns[feature_data.isna().any()]
+
+# Floats
+
+
+# Binaries
+
 
 features = list(set(total_data) - set(["id", "target"]))
 df_features = total_data.loc[:, features]
