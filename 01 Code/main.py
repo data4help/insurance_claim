@@ -1,25 +1,29 @@
 
 # %% Preliminaries
 
-# Import
+### Packages
+
+# Basic
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
 import math
-
+# Plotting
 import matplotlib.pyplot as plt
 import seaborn as sns
-
-from sklearn.pipeline import Pipeline
-from sklearn.neighbors import NearestNeighbors
-from sklearn.preprocessing import MinMaxScaler
+# Pipelines
+from sklearn.pipeline import make_pipeline, make_union
+from sklearn.base import TransformerMixin, BaseEstimator
+# Missing Values
+from sklearn.experimental import enable_iterative_imputer
+from sklearn.impute import IterativeImputer
+from category_encoders import TargetEncoder
+# Imbalance
 from sklearn.decomposition import PCA
-from sklearn.base import BaseEstimator, TransformerMixin
-
 from imblearn.over_sampling import SMOTE
 
 # Paths
-MAIN_PATH = r"/Users/paulmora/Documents/projects/insurance_claim"
+MAIN_PATH = r"/Users/PM/Documents/Projects/insurance_claim"
 RAW_PATH = rf"{MAIN_PATH}/00 Raw"
 CODE_PATH = rf"{MAIN_PATH}/01 Code"
 DATA_PATH = rf"{MAIN_PATH}/02 Data"
@@ -28,11 +32,9 @@ OUTPUT_PATH = rf"{MAIN_PATH}/03 Output"
 # Data
 train_data = pd.read_csv(rf"{RAW_PATH}/train.csv")
 test_data = pd.read_csv(rf"{RAW_PATH}/test.csv")
-total_data = pd.concat([train_data, test_data], axis=0)
-total_data.reset_index(drop=True, inplace=True)
 
-### SMALL DATASET
-total_data = total_data.loc[:1_000, :]
+### SMALL DATASET for running the data
+train_data = train_data.loc[:1_000, :]
 
 # %% Settings
 
@@ -56,8 +58,8 @@ For that we start by replacing the cells with -1 with nan. Afterwards we plot th
 to get an overall feeling of the situation
 """
 
-total_data.replace(-1, np.nan, inplace=True)
-total_data_wo_target = total_data.drop(columns="target")
+train_data.replace(-1, np.nan, inplace=True)
+total_data_wo_target = train_data.drop(columns="target")
 missing_pct_series = total_data_wo_target.apply(lambda x: (sum(x.isna()) / len(x)) * 100)
 sorted_missing_pct = missing_pct_series.sort_values(ascending=False)
 fig, axs = plt.subplots(figsize=(20, 10))
@@ -78,14 +80,14 @@ use them in predictive models for the target variable.
 THRESHOLD_MISSING = 40
 highly_missing_columns = list(sorted_missing_pct[sorted_missing_pct > THRESHOLD_MISSING].index)
 highly_missing_corr_df = train_data.loc[:, highly_missing_columns + ["target"]].corr()
-total_data.drop(columns=highly_missing_columns, inplace=True)
+train_data.drop(columns=highly_missing_columns, inplace=True)
 
 # %% Allocate variable to correct category
 
 
 def categorical_check(column, data):
     series = data.loc[:, column].dropna()
-    bool_series_cat = series.value_counts().min() > 1
+    bool_series_cat = series.nunique() / len(series) < 0.05
     bool_binary = list(set(series) - set([0, 1])) == []
     return bool_series_cat and not bool_binary
 
@@ -98,66 +100,98 @@ def binary_check(column, data):
 
 def float_check(column, data):
     series = data.loc[:, column].dropna()
-    bool_float = series.value_counts().min() == 1
+    bool_float = series.nunique() / len(series) > 0.05
     return bool_float
 
 
-y = total_data.loc[:, "target"]
-feature_data = total_data.drop(columns=["target", "id"])
-cat_variables = [x for x in feature_data.columns if categorical_check(x, feature_data)]
-bin_variables = [x for x in feature_data.columns if binary_check(x, feature_data)]
-float_variables = [x for x in feature_data.columns if float_check(x, feature_data)]
+y = train_data.loc[:, "target"]
+feature_data = train_data.drop(columns=["target", "id"])
+all_columns = feature_data.columns
+cat_variables = [x for x in all_columns if categorical_check(x, feature_data)]
+bin_variables = [x for x in all_columns if binary_check(x, feature_data)]
+float_variables = [x for x in all_columns if float_check(x, feature_data)]
 
 assert bool(set(cat_variables) & set(bin_variables) & set(float_variables)) is False, "Multiple Columns in diff Cat"
+assert len(cat_variables) + len(bin_variables) + len(float_variables) == len(all_columns), "Not complete"
 
-# %% Imputation Classes
+"""
+We find that our definition of categorical variables diverges from the one specified already.
+This is that we find variables which are defined as a float, but have more than 1 value in
+each variable. Given that this variable is therefore not continuous but rather discrete,
+we can also treat it like that.
+"""
 
-# Categorical
-class CategoricalImputation:
 
-    def __int__(self, columns):
+def cat_variables_adjust(data, column):
+    """
+    This function checks whether a function is already an integer variable, if that is not the
+    case then it is changed to one. This is necessary given that integer variables with
+    nans are incorrectly changed to a float. Also variables which have float values but
+    are actually categorical are changed through that function
+    """
+    series = data.loc[:, column]
+    if series.dtype == int:
+        return series.astype(object)
+    else:
+        num_bins = len(series.value_counts().index)
+        cut_series = pd.cut(series , bins=num_bins, labels=list(range(num_bins)))
+        return cut_series.astype(object)
+
+
+for column in cat_variables + bin_variables:
+    feature_data.loc[:, column] = cat_variables_adjust(feature_data, column)
+
+# %% Imputation of missing data
+
+"""
+Now we impute the missing data, this is done by first mean encoding all categorical
+variables. In the second instance we then apply the MICE algorithm which fits
+a linear regression onto the missing columns. The entirety is wrapped into a pipeline.
+"""
+
+
+class ColumnSelector(BaseEstimator, TransformerMixin):
+    """This class is necessary in order to select the different column groups"""
+    def __init__(self, columns):
         self.columns = columns
 
-    def columns_divider(self, X):
-        """This method divides the columns with nans and those which do not have any"""
-        bool_missing = X.isna().any()
-        columns_w_nans = X.columns[bool_missing]
-        columns_wo_nans = X.columns[~bool_missing]
-        return columns_w_nans, columns_wo_nans
+    def fit(self, x, y=None):
+        return self
 
-    def
-
-    def fit(self, X, y=None):
-        features, target = self.columns_divider(X)
-        neigh = NearestNeighbors(n_neighbors=1)
-        neigh.fit(features, target)
+    def transform(self, x):
+        return x[self.columns]
 
 
+processing_pipeline = make_pipeline(
+    # If using make_union, then we HAVE to first select all the columns we will pull from.
+    ColumnSelector(all_columns),
+    make_union(
+        # We start by 'holding out' the binary and float variables
+        make_pipeline(ColumnSelector(bin_variables),
+                      ),
+        make_pipeline(ColumnSelector(float_variables)
+                      ),
+        # The pipeline for the categorical variables includes mean encoding
+        make_pipeline(
+            ColumnSelector(cat_variables),
+            TargetEncoder(handle_missing="return_nan")
+        )
+    ),
+    IterativeImputer()
+)
 
-a = CategoricalImputation()
-
-a.fit(feature_data)
-
-feature_data.columns[feature_data.isna().any()]
-
-# Floats
 
 
-# Binaries
+def test_processing_pipeline():
+    processed = processing_pipeline.fit_transform(feature_data, y)
+    new_column_order = bin_variables + float_variables + cat_variables
+    df_processed = pd.DataFrame(processed, columns=new_column_order)
+
+    # Checking whether we still face nans
+    assert not df_processed.isna().any().any(), "There are still missing values"
 
 
-features = list(set(total_data) - set(["id", "target"]))
-df_features = total_data.loc[:, features]
-
-minmax_scaler = MinMaxScaler()
-imputer = KNNImputer(n_neighbors=1, weights="uniform", metric="nan_euclidean")
-pipe = Pipeline([("scaler", minmax_scaler), ("imputation", imputer)])
-pipe.fit(df_features)
-
-scaled_total_data = total_data.copy()
-scaled_total_data.loc[:, features] = pipe.transform(df_features)
-
-assert scaled_total_data.isna().any().any() == False, "Still Missing Data"
+test_processing_pipeline()
 
 # %% Target Variable - Imbalanced Data
 
@@ -247,45 +281,7 @@ path = rf"{OUTPUT_PATH}/continuous_variables_dist.png"
 fig.savefig(path, bbox_inches='tight')
 plt.close()
 
-# Categorical variables
 
-"""
-We therefore define every column of these float variables as a categorical if every category has more than one
-observation. This would not be the case if the variable would be a continuous variable
-"""
-
-for float_column in float_columns:
-    if total_data.loc[:, float_column].value_counts().min() > 1:
-        total_data.rename(columns={float_column: f"{float_column}_float_cat"}, inplace=True)
-
-"""
-Categorical Variables
-
-These variables are encoded with the mean of the target data. It is necessary before doing that to see that we
-have all categories we find in train also in test
-"""
-
-
-def mean_encoding(encoded_column, df_data):
-
-    mean_encoded_variables = df_data.groupby([encoded_column])["target"].mean()
-    encoded_variable = df_data.loc[:, encoded_column].map(mean_encoded_variables)
-    return encoded_variable
-
-
-for cat_column in tqdm(cat_variables):
-    total_data.loc[:, cat_column] = mean_encoding(cat_column, total_data)
-
-
-total_data.loc[:, "ps_car_11"]
-
-"""
-From the plots we do not see any significant outliers we would have to adjust.
-"""
-
-total_data.loc[:, "ps_car_11"].value_counts()
-
-a = total_data.loc[:, "ps_car_13"].value_counts()
 
 
 # %% Model building
